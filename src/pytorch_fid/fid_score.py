@@ -70,6 +70,13 @@ parser.add_argument('path', type=str, nargs=2,
                     help=('Paths to the generated images or '
                           'to .npz statistic files'))
 
+parser.add_argument('--image-size', type=int, default=256,
+                    help='Image size to be evaluated.')
+parser.add_argument('--crop-pct', type=float, default=224 / 256,
+                    help='Crop percentage.')
+parser.add_argument('--resampling-method', type=str,
+                    default='Image.Resampling.LANCZOS')
+
 IMAGE_EXTENSIONS = {'bmp', 'jpg', 'jpeg', 'pgm', 'png', 'ppm',
                     'tif', 'tiff', 'webp'}
 
@@ -91,7 +98,7 @@ class ImagePathDataset(torch.utils.data.Dataset):
 
 
 def get_activations(files, model, batch_size=50, dims=2048, device='cpu',
-                    num_workers=1):
+                    num_workers=1, args=None):
     """Calculates the activations of the pool_3 layer for all images.
 
     Params:
@@ -118,7 +125,15 @@ def get_activations(files, model, batch_size=50, dims=2048, device='cpu',
                'Setting batch size to data size'))
         batch_size = len(files)
 
-    dataset = ImagePathDataset(files, transforms=TF.ToTensor())
+    resized_image_size = int(args.image_size / args.crop_pct)
+    transform = TF.Compose([
+        TF.Resize((resized_image_size, resized_image_size),
+                  interpolation=eval(args.resampling_method)),
+        TF.CenterCrop(args.image_size),
+        TF.ToTensor(),
+    ])
+    dataset = ImagePathDataset(files, transforms=transform)
+    # dataset = ImagePathDataset(files, transforms=TF.ToTensor())
     dataloader = torch.utils.data.DataLoader(dataset,
                                              batch_size=batch_size,
                                              shuffle=False,
@@ -207,7 +222,7 @@ def calculate_frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6):
 
 
 def calculate_activation_statistics(files, model, batch_size=50, dims=2048,
-                                    device='cpu', num_workers=1):
+                                    device='cpu', num_workers=1, args=None):
     """Calculation of the statistics used by the FID.
     Params:
     -- files       : List of image files paths
@@ -225,14 +240,14 @@ def calculate_activation_statistics(files, model, batch_size=50, dims=2048,
     -- sigma : The covariance matrix of the activations of the pool_3 layer of
                the inception model.
     """
-    act = get_activations(files, model, batch_size, dims, device, num_workers)
+    act = get_activations(files, model, batch_size, dims, device, num_workers, args)
     mu = np.mean(act, axis=0)
     sigma = np.cov(act, rowvar=False)
     return mu, sigma
 
 
 def compute_statistics_of_path(path, model, batch_size, dims, device,
-                               num_workers=1):
+                               num_workers=1, args=None):
     if path.endswith('.npz'):
         with np.load(path) as f:
             m, s = f['mu'][:], f['sigma'][:]
@@ -241,12 +256,12 @@ def compute_statistics_of_path(path, model, batch_size, dims, device,
         files = sorted([file for ext in IMAGE_EXTENSIONS
                        for file in path.glob('*.{}'.format(ext))])
         m, s = calculate_activation_statistics(files, model, batch_size,
-                                               dims, device, num_workers)
+                                               dims, device, num_workers, args)
 
     return m, s
 
 
-def calculate_fid_given_paths(paths, batch_size, device, dims, num_workers=1):
+def calculate_fid_given_paths(paths, batch_size, device, dims, num_workers=1, args=None):
     """Calculates the FID of two paths"""
     for p in paths:
         if not os.path.exists(p):
@@ -257,9 +272,9 @@ def calculate_fid_given_paths(paths, batch_size, device, dims, num_workers=1):
     model = InceptionV3([block_idx]).to(device)
 
     m1, s1 = compute_statistics_of_path(paths[0], model, batch_size,
-                                        dims, device, num_workers)
+                                        dims, device, num_workers, args)
     m2, s2 = compute_statistics_of_path(paths[1], model, batch_size,
-                                        dims, device, num_workers)
+                                        dims, device, num_workers, args)
     fid_value = calculate_frechet_distance(m1, s1, m2, s2)
 
     return fid_value
@@ -314,7 +329,8 @@ def main():
                                           args.batch_size,
                                           device,
                                           args.dims,
-                                          num_workers)
+                                          num_workers,
+                                          args)
     print('FID: ', fid_value)
 
 
